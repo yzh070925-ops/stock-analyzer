@@ -189,9 +189,10 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
               <button data-ind="vol">VOL</button>
             </div>
             <div class="chart-tabs">
+              <button data-range="intraday" class="active">分时</button>
               <button data-range="1d">1日</button>
               <button data-range="5d">5日</button>
-              <button data-range="1m" class="active">1月</button>
+              <button data-range="1m">1月</button>
               <button data-range="3m">3月</button>
               <button data-range="1y">1年</button>
             </div>
@@ -228,7 +229,7 @@ const EM_FIELDS = 'f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f116,f117,f162,f167,f
 function emM(code){return code.startsWith('6')||code.startsWith('9')?1:0}
 
 // =================== STATE ===================
-let currentCode='', currentData=null, chartData=[], chartRange='1m';
+let currentCode='', currentData=null, chartData=[], chartRange='intraday';
 let activeIndicators=new Set(['ma']);
 let watchlist=JSON.parse(localStorage.getItem('stockWatchlist')||'[]');
 let refreshTimer=null, isPaused=false;
@@ -253,11 +254,21 @@ function fmtL(v){if(v==null||isNaN(v))return'--';if(v>=1e12)return(v/1e12).toFix
 function toast(m,d=2500){toastEl.textContent=m;toastEl.classList.add('show');clearTimeout(toastEl._hide);toastEl._hide=setTimeout(()=>toastEl.classList.remove('show'),d)}
 
 // =================== DATA FETCHING (multi-source) ===================
-async function fetchWithTimeout(url, ms=8000){
-  const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),ms);
-  try{const r=await fetch(url,{signal:ctrl.signal});return r}
-  finally{clearTimeout(timer)}
+async function fetchWithTimeout(url, ms=20000){
+  // 首次直连（无超时信号，避免AbortController兼容问题）
+  try{
+    const r=await Promise.race([
+      fetch(url),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('超时')),ms))
+    ]);
+    return r;
+  }catch(e){
+    // 超时后尝试带AbortController的重试
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),ms);
+    try{return await fetch(url,{signal:ctrl.signal})}
+    finally{clearTimeout(timer)}
+  }
 }
 
 async function fetchStockData(code){
@@ -303,7 +314,7 @@ function fetchTencentData(code){
     window[vn]=undefined;
     const s=document.createElement('script');
     s.src=`https://qt.gtimg.cn/q=${m}${code}`;
-    const t=setTimeout(()=>{s.parentNode&&s.parentNode.removeChild(s);reject(new Error('超时'))},8000);
+    const t=setTimeout(()=>{s.parentNode&&s.parentNode.removeChild(s);reject(new Error('超时'))},15000);
     s.onload=()=>{
       clearTimeout(t);
       setTimeout(()=>{
@@ -318,8 +329,8 @@ function fetchTencentData(code){
           change:price-yclose,
           changePercent:yclose>0?((price-yclose)/yclose*100):0,
           volume:vol*100,amount,
-          turnoverRate:p[28]||'--',pe:p[29]||'--',
-          amplitude:((high-low)/yclose*100).toFixed(2)+'%',marketCap:+p[45]
+          turnoverRate:p[38]||'--',pe:p[39]||'--',
+          amplitude:((high-low)/yclose*100).toFixed(2)+'%',marketCap:0
         });
         s.parentNode&&s.parentNode.removeChild(s);
       },200)
@@ -329,7 +340,32 @@ function fetchTencentData(code){
   })
 }
 
+// 分时数据（腾讯API，支持CORS）
+async function fetchIntradayData(code){
+  const m=emM(code)?'sh':'sz';
+  try{
+    const r=await fetchWithTimeout(`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${m}${code}&_=${Date.now()}`);
+    const j=await r.json();
+    const dd=j.data&&j.data[m+code]&&j.data[m+code].data;
+    if(!dd||!dd.data)return[];
+    const yclose=j.data[m+code].qt&&parseFloat(j.data[m+code].qt['p']); // 昨收价
+    return dd.data.map(line=>{
+      const parts=line.split(' ');
+      const t=parts[0],price=parseFloat(parts[1]),vol=parseFloat(parts[2])||0;
+      return{
+        time:t,price,volume:vol,
+        date:t.slice(0,2)+':'+t.slice(2,4),
+        close:price,open:price,high:price,low:price,
+        yclose:yclose||0
+      }
+    })
+  }catch{return[]}
+}
+
 async function fetchKLineData(code,range){
+  // 分时数据单独处理
+  if(range==='intraday')return fetchIntradayData(code);
+
   let klt,lmt;
   switch(range){case'1d':klt=5;lmt=60;break;case'5d':klt=15;lmt=120;break;case'1m':klt=101;lmt=30;break;case'3m':klt=101;lmt=90;break;case'1y':klt=101;lmt=250;break;default:klt=101;lmt=30}
   // 1. Try East Money
@@ -516,6 +552,77 @@ function drawChart(){
   }
 
   const data=chartData;
+  const isIntra=chartRange==='intraday'||data[0].time!==undefined;
+
+  // ==================== 分时图 ====================
+  if(isIntra){
+    const pad={top:12,bottom:28,left:55,right:16};
+    const cw=W-pad.left-pad.right,ch=H-pad.top-pad.bottom;
+    const prices=data.map(d=>d.price||d.close);
+    const minP=Math.min(...prices),maxP=Math.max(...prices);
+    const yc=data[0].yclose||0;
+    const pRange=Math.max(maxP-minP,0.01),pPad=pRange*0.1;
+    const pMin=minP-pPad,pMax=maxP+pPad;
+
+    const yP=v=>pad.top+ch-((v-pMin)/(pMax-pMin))*ch;
+    const xP=i=>pad.left+(i/(data.length-1))*cw;
+
+    // 昨收价线
+    if(yc>0){
+      ctx.strokeStyle='rgba(255,255,255,0.2)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+      ctx.beginPath();ctx.moveTo(pad.left,yP(yc));ctx.lineTo(W-pad.right,yP(yc));ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle='rgba(255,255,255,0.3)';ctx.font='10px sans-serif';ctx.textAlign='left';ctx.fillText('昨收 '+fmt(yc),W-pad.right-80,yP(yc)-4)
+    }
+
+    // Grid
+    ctx.strokeStyle='#1a1a2e';ctx.lineWidth=1;
+    for(let i=0;i<=4;i++){const y=pad.top+(ch/4)*i;ctx.beginPath();ctx.moveTo(pad.left,y);ctx.lineTo(W-pad.right,y);ctx.stroke()}
+
+    // Y轴标签
+    ctx.fillStyle='#484f58';ctx.font='10px sans-serif';ctx.textAlign='right';
+    for(let i=0;i<=4;i++){const v=pMax-(pMax-pMin)*(i/4);ctx.fillText(fmt(v),pad.left-6,pad.top+(ch/4)*i+3)}
+
+    // X轴时间标签
+    ctx.textAlign='center';ctx.fillStyle='#484f58';ctx.font='10px sans-serif';
+    const timeLabels=['09:30','10:00','10:30','11:00','11:30','13:00','13:30','14:00','14:30','15:00'];
+    timeLabels.forEach(t=>{
+      const idx=data.findIndex(d=>d.date===t);
+      if(idx>=0)ctx.fillText(t,xP(idx),H-6)
+    });
+
+    // 价格线
+    const isUp=prices[prices.length-1]>=prices[0];
+    ctx.strokeStyle=isUp?'#f85149':'#3fb950';ctx.lineWidth=2;ctx.lineJoin='round';
+    ctx.beginPath();
+    data.forEach((d,i)=>{const x=xP(i),y=yP(d.price||d.close);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});
+    ctx.stroke();
+
+    // 渐变填充
+    const grad=ctx.createLinearGradient(0,pad.top,0,pad.top+ch);
+    grad.addColorStop(0,isUp?'rgba(248,81,73,0.12)':'rgba(63,185,80,0.12)');
+    grad.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.lineTo(xP(data.length-1),pad.top+ch);
+    ctx.lineTo(xP(0),pad.top+ch);
+    ctx.closePath();ctx.fillStyle=grad;ctx.fill();
+
+    // 成交量
+    const volMax=Math.max(...data.map(d=>d.volume||0),1);
+    const volH=40,vTop=H-28-volH;
+    data.forEach((d,i)=>{const x=xP(i),bw=Math.max(1,cw/data.length*0.6),bh=(d.volume/volMax)*volH;ctx.fillStyle=(d.price||d.close)>=yc?'rgba(248,81,73,0.25)':'rgba(63,185,80,0.25)';ctx.fillRect(x-bw/2,vTop+(volH-bh),bw,bh)});
+
+    // 最新价标记
+    const lx=xP(data.length-1),ly=yP(prices[prices.length-1]);
+    ctx.fillStyle=isUp?'#f85149':'#3fb950';ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#0d1117';ctx.lineWidth=2;ctx.stroke();
+
+    // 涨跌幅信息
+    ctx.fillStyle='#8b949e';ctx.font='11px sans-serif';ctx.textAlign='left';
+    const chg=data[data.length-1].price-data[0].price;
+    const pct=data[0].price>0?(chg/data[0].price*100):0;
+    ctx.fillText(`开盘:${fmt(data[0].price)}  最新:${fmt(prices[prices.length-1])}  涨跌:${chg>=0?'+':''}${fmt(chg)}(${pct>=0?'+':''}${pct.toFixed(2)}%)`,pad.left,pad.top-2);
+    return
+  }
+
   const showMA=activeIndicators.has('ma'),showMACD=activeIndicators.has('macd');
   const showRSI=activeIndicators.has('rsi'),showKDJ=activeIndicators.has('kdj');
   const showBOLL=activeIndicators.has('boll'),showVOL=activeIndicators.has('vol');
@@ -727,7 +834,7 @@ function displayStockInfo(data){
     {l:'市盈率',v:data.pe||'--',c:'#c9d1d9'},{l:'总市值',v:fmtL(data.marketCap)+'元',c:'#c9d1d9'},
   ].map(m=>`<div class="metric"><div class="label">${m.l}</div><div class="value" style="color:${m.c}">${m.v}</div></div>`).join('');
 
-  fetchKLineData(data.code,chartRange).then(d=>{chartData=d;drawChart();if(d&&d.length>0)displaySignals(d)}).catch(()=>{chartData=[];drawChart()})
+  fetchKLineData(data.code,chartRange).then(d=>{chartData=d;drawChart();if(d&&d.length>0&&chartRange!=='intraday')displaySignals(d)}).catch(()=>{chartData=[];drawChart()})
 }
 
 function showEmptyState(){emptyState.style.display='block';stockInfo.style.display='none';chartData=[];drawChart()}
