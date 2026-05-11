@@ -289,10 +289,22 @@ function fetchTencentData(code){
 async function fetchKLineData(code,range){
   let klt,lmt;
   switch(range){case'1d':klt=5;lmt=60;break;case'5d':klt=15;lmt=120;break;case'1m':klt=101;lmt=30;break;case'3m':klt=101;lmt=90;break;case'1y':klt=101;lmt=250;break;default:klt=101;lmt=30}
+  // 1. Try East Money
   try{
-    const r=await fetch(`${EM_KLINES}?secid=${emM(code)}.${code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}&_=${Date.now()}`);
+    const r=await fetchWithTimeout(`${EM_KLINES}?secid=${emM(code)}.${code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}&_=${Date.now()}`);
     const j=await r.json();
     if(j.data&&j.data.klines)return j.data.klines.map(l=>{const p=l.split(',');return{date:p[0],open:+p[1],close:+p[2],high:+p[3],low:+p[4],volume:+p[5],amount:+p[6]}})
+  }catch{}
+  // 2. Fallback: Tencent K-line API (also supports CORS)
+  try{
+    const daysMap={'1d':2,'5d':5,'1m':30,'3m':90,'1y':365};
+    const days=daysMap[range]||30;
+    const m=emM(code)?'sh':'sz';
+    const r=await fetchWithTimeout(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${m}${code},day,,,${days},qfq&_=${Date.now()}`);
+    const j=await r.json();
+    const kd=j.data?.[m+code];
+    const kl=kd?.day||kd?.qfqday||[];
+    if(kl.length>0)return kl.map(item=>({date:item[0],open:+item[1],close:+item[2],high:+item[3],low:+item[4],volume:+item[5]||0})).reverse()
   }catch{}
   return[]
 }
