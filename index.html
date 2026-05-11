@@ -256,10 +256,11 @@ async function fetchStockData(code){
 // Tencent API via script tag (works when CORS APIs are blocked)
 function fetchTencentData(code){
   return new Promise((resolve,reject)=>{
-    const vn='v_'+emM(code)+code;
+    const m=emM(code)?'sh':'sz';
+    const vn='v_'+m+code;
     window[vn]=undefined;
     const s=document.createElement('script');
-    s.src=`https://qt.gtimg.cn/q=${emM(code)?'sh':'sz'}${code}`;
+    s.src=`https://qt.gtimg.cn/q=${m}${code}`;
     const t=setTimeout(()=>{s.parentNode?.removeChild(s);reject(new Error('超时'))},8000);
     s.onload=()=>{
       clearTimeout(t);
