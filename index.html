@@ -322,7 +322,7 @@ function fetchTencentData(code){
         if(!raw){if(s.parentNode)s.parentNode.removeChild(s);reject(new Error('无数据'));return}
         const p=raw.split('~');
         if(p.length<30){reject(new Error('数据不完整'));return}
-        const price=+p[3],yclose=+p[4],open=+p[5],high=+p[23],low=+p[24],vol=+p[6],amount=+p[7];
+        const price=+p[3],yclose=+p[4],open=+p[5],high=+p[33],low=+p[34],vol=+p[6],amount=+p[37];
         resolve({
           code:p[2]||code,name:p[1]||code,
           price,open,high,low,yclose,
