@@ -388,19 +388,19 @@ body {
 <script>
 // =================== CONFIG ===================
 const REFRESH_INTERVAL = 5000; // 5 seconds
-const EM_API = 'https://push2his.eastmoney.com/api/qt/stock/kline/get';
-const TENCENT_KL_API = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
+const EM_QUOTE = 'https://push2.eastmoney.com/api/qt/stock/get';
+const EM_KLINES = 'https://push2his.eastmoney.com/api/qt/stock/kline/get';
 
-// script 标签加载 - 彻底绕过 CORS
-function loadScript(url) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = url;
-    const timeout = setTimeout(() => reject(new Error('请求超时')), 10000);
-    script.onload = () => { clearTimeout(timeout); setTimeout(resolve, 200); };
-    script.onerror = () => { clearTimeout(timeout); reject(new Error('网络请求失败')); };
-    document.body.appendChild(script);
-  });
+// 东方财富 API 支持 CORS（Access-Control-Allow-Origin: *），可直接 fetch
+// 价格字段均为整数，需除以 100
+
+const EM_FIELDS = 'f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f116,f117,f162,f167,f168,f169,f170,f171';
+// f43=现价  f44=最高  f45=最低  f46=开盘  f47=昨收  f48=成交量  f50=成交额
+// f57=代码  f58=名称  f60=涨跌幅  f116=总市值  f117=流通市值
+// f162=换手率  f167=市盈率  f168=振幅  f169=涨跌额  f170=涨跌幅  f171=更新时间
+
+function emMarket(code) {
+  return code.startsWith('6') || code.startsWith('9') ? 1 : 0;
 }
 
 // =================== STATE ===================
@@ -434,14 +434,6 @@ const refreshDot = document.getElementById('refreshDot');
 const refreshText = document.getElementById('refreshText');
 
 // =================== HELPERS ===================
-function detectMarket(code) {
-  code = code.toString().padStart(6, '0');
-  if (code.startsWith('6') || code.startsWith('9')) return 'sh';
-  if (code.startsWith('0') || code.startsWith('3') || code.startsWith('2')) return 'sz';
-  if (code.startsWith('4') || code.startsWith('8')) return 'bj';
-  return 'sh';
-}
-
 function formatPrice(v) {
   if (v === undefined || v === null || isNaN(v)) return '--';
   return Number(v).toFixed(2);
@@ -462,159 +454,104 @@ function showToast(msg, duration = 2500) {
   toastEl._hide = setTimeout(() => toastEl.classList.remove('show'), duration);
 }
 
-// =================== SINA API (script tag) ===================
+// =================== 东方财富 API (支持 CORS) ===================
 async function fetchStockData(code) {
-  const market = detectMarket(code);
-  const sinaCode = market + code;
-  const varName = 'hq_str_' + sinaCode;
+  const url = `${EM_QUOTE}?secid=${emMarket(code)}.${code}&fields=${EM_FIELDS}&_=${Date.now()}`;
 
-  // 清理旧变量
-  window[varName] = undefined;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('网络请求失败: ' + resp.status);
+  const json = await resp.json();
 
-  // 通过 script 标签加载，完全不受 CORS 限制
-  await loadScript(`https://hq.sinajs.cn/list=${sinaCode}`);
+  if (!json.data) throw new Error('股票代码不存在或非交易时段');
 
-  const raw = window[varName];
-  if (!raw) throw new Error('无法获取数据，可能是非交易时段或股票代码错误');
+  const d = json.data;
+  function p(v) { return v !== undefined ? (v / 100).toFixed(2) : '--'; }
 
-  const parts = raw.split(',');
-  if (parts.length < 30) throw new Error('数据不完整');
-
-  const name = parts[0];
-  const open = parseFloat(parts[1]);
-  const yclose = parseFloat(parts[2]);
-  const price = parseFloat(parts[3]);
-  const high = parseFloat(parts[4]);
-  const low = parseFloat(parts[5]);
-  const volume = parseFloat(parts[8]); // 成交量（手）
-  const amount = parseFloat(parts[9]); // 成交额
-  const buy1 = parseFloat(parts[10]);
-  const sell1 = parseFloat(parts[20]);
-  const date = parts[30];
-  const time = parts[31];
-  const change = price - yclose;
-  const changePercent = yclose > 0 ? (change / yclose) * 100 : 0;
+  const price = p(d.f43);
+  const open = p(d.f46);
+  const high = p(d.f44);
+  const low = p(d.f45);
+  const yclose = p(d.f47);
+  const change = d.f169 !== undefined ? (d.f169 / 100).toFixed(2) : '--';
+  const changePercent = d.f170 !== undefined ? d.f170.toFixed(2) : '--';
 
   return {
-    code, name, open, yclose, price, high, low, volume, amount,
-    buy1, sell1, date, time,
-    change, changePercent,
+    code: d.f57 || code,
+    name: d.f58 || '--',
+    price: parseFloat(price),
+    open: parseFloat(open),
+    high: parseFloat(high),
+    low: parseFloat(low),
+    yclose: parseFloat(yclose),
+    change: parseFloat(change),
+    changePercent: parseFloat(changePercent),
+    volume: d.f48 || 0,
+    amount: d.f50 || 0,
+    highLimit: p(d.f52),
+    lowLimit: p(d.f51),
+    marketCap: d.f116,
+    floatCap: d.f117,
+    turnoverRate: d.f162 !== undefined ? d.f162.toFixed(2) + '%' : '--',
+    pe: d.f167 !== undefined ? d.f167.toFixed(2) : '--',
+    amplitude: d.f168 !== undefined ? d.f168.toFixed(2) + '%' : '--',
+    updateTime: d.f171 || '--',
   };
 }
 
 async function fetchWatchlistData(codes) {
   if (codes.length === 0) return [];
-  const sinaCodes = codes.map(c => detectMarket(c) + c);
-  const varNames = sinaCodes.map(c => 'hq_str_' + c);
+  const secids = codes.map(c => emMarket(c) + '.' + c).join(',');
+  const url = `${EM_QUOTE}?secid=${secids.split(',')[0]}&fields=${EM_FIELDS}&_=${Date.now()}`;
 
-  // 清理旧变量
-  varNames.forEach(n => { window[n] = undefined; });
-
-  try {
-    await loadScript(`https://hq.sinajs.cn/list=${sinaCodes.join(',')}`);
-  } catch {
-    return [];
-  }
-
-  return varNames.map((vn, i) => {
-    const raw = window[vn];
-    if (!raw) return null;
-    const parts = raw.split(',');
-    if (parts.length < 5) return null;
-    const yclose = parseFloat(parts[2]);
-    const price = parseFloat(parts[3]);
-    const change = price - yclose;
-    const changePercent = yclose > 0 ? (change / yclose) * 100 : 0;
-    return { code: codes[i], name: parts[0], price, change, changePercent };
-  }).filter(d => d !== null);
-}
-
-// 通用 fetch + CORS 代理后备（用于 K 线等非实时数据）
-async function fetchWithFallback(url) {
-  try {
-    const resp = await fetch(url);
-    if (resp.ok) return resp;
-  } catch {}
-  // 尝试 CORS 代理
-  for (const proxy of ['https://api.allorigins.win/raw?url=', 'https://corsproxy.io/?url=']) {
+  // East Money API only returns one stock at a time, so fetch sequentially
+  const results = [];
+  for (const code of codes) {
     try {
-      const resp = await fetch(proxy + encodeURIComponent(url));
-      if (resp.ok) return resp;
+      const u = `${EM_QUOTE}?secid=${emMarket(code)}.${code}&fields=${EM_FIELDS}&_=${Date.now()}`;
+      const r = await fetch(u);
+      const j = await r.json();
+      if (j.data) {
+        const d = j.data;
+        const price = d.f43 !== undefined ? (d.f43 / 100) : 0;
+        const yclose = d.f47 !== undefined ? (d.f47 / 100) : 1;
+        results.push({
+          code, name: d.f58 || code,
+          price,
+          change: d.f169 !== undefined ? (d.f169 / 100) : 0,
+          changePercent: d.f170 !== undefined ? d.f170 : 0,
+        });
+      }
     } catch {}
   }
-  throw new Error('网络请求失败');
+  return results;
 }
 
-// =================== EAST MONEY K-LINE API ===================
+// =================== K-LINE DATA (东方财富) ===================
 async function fetchKLineData(code, range) {
-  const market = code.startsWith('6') || code.startsWith('9') ? 1 : 0;
   let klt, lmt;
   switch (range) {
-    case '1d': klt = 5; lmt = 60; break;  // 5min
-    case '5d': klt = 15; lmt = 120; break; // 15min
-    case '1m': klt = 101; lmt = 30; break;  // daily
+    case '1d': klt = 5; lmt = 60; break;   // 5分钟线
+    case '5d': klt = 15; lmt = 120; break;  // 15分钟线
+    case '1m': klt = 101; lmt = 30; break;   // 日线
     case '3m': klt = 101; lmt = 90; break;
     case '1y': klt = 101; lmt = 250; break;
     default: klt = 101; lmt = 30;
   }
 
-  const url = `${EM_API}?secid=${market}.${code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}`;
+  const url = `${EM_KLINES}?secid=${emMarket(code)}.${code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}&_=${Date.now()}`;
 
   try {
-    const resp = await fetchWithFallback(url);
+    const resp = await fetch(url);
     const data = await resp.json();
 
-  if (data && data.data && data.data.klines) {
-    return data.data.klines.map(line => {
-      const parts = line.split(',');
-      return {
-        date: parts[0],
-        open: parseFloat(parts[1]),
-        close: parseFloat(parts[2]),
-        high: parseFloat(parts[3]),
-        low: parseFloat(parts[4]),
-        volume: parseFloat(parts[5]),
-        amount: parseFloat(parts[6])
-      };
-    });
-  }
-
-  // Fallback: try Tencent API
-  return await fetchTencentKLine(code, range);
-} catch {
-  return await fetchTencentKLine(code, range);
-}
-}
-
-async function fetchTencentKLine(code, range) {
-  const market = detectMarket(code);
-  const tencentCode = market + code;
-
-  // Map range to Tencent params
-  const daysMap = { '1d': 1, '5d': 5, '1m': 30, '3m': 90, '1y': 365 };
-  const days = daysMap[range] || 30;
-
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tencentCode},day,,,${days},qfq`;
-
-  try {
-    const resp = await fetchWithFallback(url);
-    const data = await resp.json();
-
-  if (data && data.data && data.data[tencentCode]) {
-    const kline = data.data[tencentCode].day || data.data[tencentCode].qfqday || [];
-    return kline.map(item => ({
-      date: item[0],
-      open: parseFloat(item[1]),
-      close: parseFloat(item[2]),
-      high: parseFloat(item[3]),
-      low: parseFloat(item[4]),
-      volume: parseFloat(item[5]) || 0
-    })).reverse();
-  }
+    if (data && data.data && data.data.klines) {
+      return data.data.klines.map(line => {
+        const p = line.split(',');
+        return { date: p[0], open: +p[1], close: +p[2], high: +p[3], low: +p[4], volume: +p[5], amount: +p[6] };
+      });
+    }
+  } catch {}
   return [];
-} catch {
-  return [];
-}
 }
 
 // =================== CHART DRAWING ===================
@@ -768,6 +705,7 @@ function displayStockInfo(data) {
   stockStatus.textContent = '实时';
 
   // Metrics
+  const zf = data.yclose > 0 ? (((data.high - data.low) / data.yclose) * 100).toFixed(2) + '%' : '--';
   const metrics = [
     { label: '最高', value: formatPrice(data.high), color: data.high > data.price ? '#f85149' : '#c9d1d9' },
     { label: '最低', value: formatPrice(data.low), color: data.low < data.price ? '#3fb950' : '#c9d1d9' },
@@ -775,10 +713,10 @@ function displayStockInfo(data) {
     { label: '昨收', value: formatPrice(data.yclose), color: '#8b949e' },
     { label: '成交量', value: formatLargeNum(data.volume) + '手', color: '#c9d1d9' },
     { label: '成交额', value: formatLargeNum(data.amount) + '元', color: '#c9d1d9' },
-    { label: '买一', value: formatPrice(data.buy1), color: '#3fb950' },
-    { label: '卖一', value: formatPrice(data.sell1), color: '#f85149' },
-    { label: '振幅', value: data.yclose > 0 ? (((data.high - data.low) / data.yclose) * 100).toFixed(2) + '%' : '--', color: '#c9d1d9' },
-    { label: '换手率', value: '--', color: '#8b949e' },
+    { label: '振幅', value: data.amplitude || zf, color: '#c9d1d9' },
+    { label: '换手率', value: data.turnoverRate || '--', color: '#c9d1d9' },
+    { label: '市盈率', value: data.pe || '--', color: '#c9d1d9' },
+    { label: '总市值', value: formatLargeNum(data.marketCap) + '元', color: '#c9d1d9' },
   ];
 
   metricsContainer.innerHTML = metrics.map(m => `
