@@ -395,8 +395,8 @@ const EM_KLINES = 'https://push2his.eastmoney.com/api/qt/stock/kline/get';
 // 价格字段均为整数，需除以 100
 
 const EM_FIELDS = 'f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f116,f117,f162,f167,f168,f169,f170,f171';
-// f43=现价  f44=最高  f45=最低  f46=开盘  f47=昨收  f48=成交量  f50=成交额
-// f57=代码  f58=名称  f60=涨跌幅  f116=总市值  f117=流通市值
+// f43=现价  f44=最高  f45=最低  f46=开盘  f47=成交量  f48=成交额  f50=量比
+// f57=代码  f58=名称  f60=昨收  f116=总市值  f117=流通市值
 // f162=换手率  f167=市盈率  f168=振幅  f169=涨跌额  f170=涨跌幅  f171=更新时间
 
 function emMarket(code) {
@@ -471,7 +471,7 @@ async function fetchStockData(code) {
   const open = p(d.f46);
   const high = p(d.f44);
   const low = p(d.f45);
-  const yclose = p(d.f47);
+  const yclose = p(d.f60);
   const change = d.f169 !== undefined ? (d.f169 / 100).toFixed(2) : '--';
   const changePercent = d.f170 !== undefined ? d.f170.toFixed(2) : '--';
 
@@ -485,8 +485,8 @@ async function fetchStockData(code) {
     yclose: parseFloat(yclose),
     change: parseFloat(change),
     changePercent: parseFloat(changePercent),
-    volume: d.f48 || 0,
-    amount: d.f50 || 0,
+    volume: (d.f47 || 0) * 100,  // f47=万股 → 手
+    amount: d.f48 || 0,
     highLimit: p(d.f52),
     lowLimit: p(d.f51),
     marketCap: d.f116,
@@ -513,7 +513,7 @@ async function fetchWatchlistData(codes) {
       if (j.data) {
         const d = j.data;
         const price = d.f43 !== undefined ? (d.f43 / 100) : 0;
-        const yclose = d.f47 !== undefined ? (d.f47 / 100) : 1;
+        const yclose = d.f60 !== undefined ? (d.f60 / 100) : 1;
         results.push({
           code, name: d.f58 || code,
           price,
