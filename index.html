@@ -270,11 +270,17 @@ async function fetchStockData(code){
     if(!j.data||!j.data.f43)throw new Error('无数据');
     const d=j.data;
     function p(v){return v!=null?(v/100).toFixed(2):'--'}
+    const rawPct=d.f170!=null?+d.f170.toFixed(2):0;
+    const rawChange=d.f169!=null?+(d.f169/100).toFixed(2):0;
+    // 校验涨跌幅是否合理(A股日限幅10%/20%)，异常则重新计算
+    const price=+p(d.f43),yclose=+p(d.f60);
+    const calcPct=yclose>0?((price-yclose)/yclose*100):0;
+    const validPct=Math.abs(rawPct)<=50?rawPct:calcPct;
     return{
       code:d.f57||code,name:d.f58||code,
-      price:+p(d.f43),open:+p(d.f46),high:+p(d.f44),low:+p(d.f45),yclose:+p(d.f60),
-      change:d.f169!=null?+(d.f169/100).toFixed(2):0,
-      changePercent:d.f170!=null?+d.f170.toFixed(2):0,
+      price,open:+p(d.f46),high:+p(d.f44),low:+p(d.f45),yclose,
+      change:Math.abs(rawChange)<=1000?rawChange:(price-yclose),
+      changePercent:validPct,
       volume:(d.f47||0)*100,amount:d.f48||0,
       turnoverRate:d.f162!=null?d.f162.toFixed(2)+'%':'--',
       pe:d.f167!=null?d.f167.toFixed(2):'--',
@@ -286,7 +292,7 @@ async function fetchStockData(code){
   // 2. Fallback: Try Tencent API via script tag
   try{return await fetchTencentData(code)}catch(e){lastErr=e}
 
-  throw new Error(lastErr?.message||'无法获取数据')
+  throw new Error((lastErr&&lastErr.message)||'无法获取数据')
 }
 
 // Tencent API via script tag (works when CORS APIs are blocked)
@@ -297,7 +303,7 @@ function fetchTencentData(code){
     window[vn]=undefined;
     const s=document.createElement('script');
     s.src=`https://qt.gtimg.cn/q=${m}${code}`;
-    const t=setTimeout(()=>{s.parentNode?.removeChild(s);reject(new Error('超时'))},8000);
+    const t=setTimeout(()=>{s.parentNode&&s.parentNode.removeChild(s);reject(new Error('超时'))},8000);
     s.onload=()=>{
       clearTimeout(t);
       setTimeout(()=>{
@@ -315,10 +321,10 @@ function fetchTencentData(code){
           turnoverRate:p[28]||'--',pe:p[29]||'--',
           amplitude:((high-low)/yclose*100).toFixed(2)+'%',marketCap:+p[45]
         });
-        s.parentNode?.removeChild(s);
+        s.parentNode&&s.parentNode.removeChild(s);
       },200)
     };
-    s.onerror=()=>{clearTimeout(t);s.parentNode?.removeChild(s);reject(new Error('加载失败'))};
+    s.onerror=()=>{clearTimeout(t);s.parentNode&&s.parentNode.removeChild(s);reject(new Error('加载失败'))};
     document.body.appendChild(s);
   })
 }
@@ -744,7 +750,7 @@ function renderWatchlist(){
 addWatchlistBtn.addEventListener('click',()=>{
   if(!currentCode){toast('请先查询股票');return}
   if(watchlist.includes(currentCode)){toast('已在自选');return}
-  watchlist.push(currentCode);localStorage.setItem('stockWatchlist',JSON.stringify(watchlist));renderWatchlist();toast(`已添加 ${currentData?.name||currentCode}`)
+  watchlist.push(currentCode);localStorage.setItem('stockWatchlist',JSON.stringify(watchlist));renderWatchlist();toast(`已添加 ${(currentData&&currentData.name)||currentCode}`)
 });
 
 // =================== QUERY ===================
