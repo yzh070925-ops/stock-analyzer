@@ -382,15 +382,28 @@ async function fetchKLineData(code,range){
 }
 
 async function fetchWatchlistData(codes){
-  const results=[];
-  for(const c of codes){
-    try{
-      const r=await fetch(`${EM_QUOTE}?secid=${emM(c)}.${c}&fields=${EM_FIELDS}&_=${Date.now()}`);
-      const j=await r.json();
-      if(j.data){const d=j.data;results.push({code:c,name:d.f58||c,price:d.f43!=null?d.f43/100:0,change:d.f169!=null?d.f169/100:0,changePercent:d.f170!=null?d.f170:0})}
-    }catch{}
-  }
-  return results
+  if(codes.length===0)return[];
+  // 批量加载腾讯 script
+  const m=codes.map(c=>(emM(c)?'sh':'sz')+c);
+  const vns=m.map(c=>'v_'+c);
+  vns.forEach(n=>{window[n]=undefined});
+  const s=document.createElement('script');
+  s.src=`https://qt.gtimg.cn/q=${m.join(',')}`;
+  try{
+    await new Promise((res,rej)=>{
+      const t=setTimeout(()=>{s.parentNode&&s.parentNode.removeChild(s);rej()},15000);
+      s.onload=()=>{clearTimeout(t);setTimeout(res,300)};
+      s.onerror=()=>{clearTimeout(t);s.parentNode&&s.parentNode.removeChild(s);rej()};
+      document.body.appendChild(s);
+    });
+    return vns.map((vn,i)=>{
+      const raw=window[vn];
+      if(!raw)return null;
+      const p=raw.split('~');
+      const price=+p[3]||0,chl=+(p[31]||0),pct=+(p[32]||0);
+      return{code:codes[i],name:p[1]||codes[i],price,change:chl,changePercent:pct}
+    }).filter(d=>d!==null)
+  }catch{return[]}
 }
 
 // =================== TECHNICAL INDICATORS ===================
