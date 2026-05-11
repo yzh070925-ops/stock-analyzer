@@ -266,12 +266,12 @@ function fetchTencentData(code){
       clearTimeout(t);
       setTimeout(()=>{
         const raw=window[vn];
-        if(!raw){s.parentNode?.removeChild(s);reject(new Error('无数据'));return}
+        if(!raw){if(s.parentNode)s.parentNode.removeChild(s);reject(new Error('无数据'));return}
         const p=raw.split('~');
         if(p.length<30){reject(new Error('数据不完整'));return}
         const price=+p[3],yclose=+p[4],open=+p[5],high=+p[23],low=+p[24],vol=+p[6],amount=+p[7];
         resolve({
-          code,p[2]||code,name:p[1]||code,
+          code:p[2]||code,name:p[1]||code,
           price,open,high,low,yclose,
           change:price-yclose,
           changePercent:yclose>0?((price-yclose)/yclose*100):0,
@@ -303,8 +303,8 @@ async function fetchKLineData(code,range){
     const m=emM(code)?'sh':'sz';
     const r=await fetchWithTimeout(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${m}${code},day,,,${days},qfq&_=${Date.now()}`);
     const j=await r.json();
-    const kd=j.data?.[m+code];
-    const kl=kd?.day||kd?.qfqday||[];
+    const kd=j.data&&j.data[m+code];
+    const kl=kd&&(kd.day||kd.qfqday||[]);
     if(kl.length>0)return kl.map(item=>({date:item[0],open:+item[1],close:+item[2],high:+item[3],low:+item[4],volume:+item[5]||0})).reverse()
   }catch{}
   return[]
