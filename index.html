@@ -215,25 +215,74 @@ function fmt(v){return v==null||isNaN(v)?'--':Number(v).toFixed(2)}
 function fmtL(v){if(v==null||isNaN(v))return'--';if(v>=1e12)return(v/1e12).toFixed(2)+'万亿';if(v>=1e8)return(v/1e8).toFixed(2)+'亿';if(v>=1e4)return(v/1e4).toFixed(2)+'万';return Number(v).toLocaleString()}
 function toast(m,d=2500){toastEl.textContent=m;toastEl.classList.add('show');clearTimeout(toastEl._hide);toastEl._hide=setTimeout(()=>toastEl.classList.remove('show'),d)}
 
-// =================== API ===================
+// =================== DATA FETCHING (multi-source) ===================
+async function fetchWithTimeout(url, ms=8000){
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),ms);
+  try{const r=await fetch(url,{signal:ctrl.signal});return r}
+  finally{clearTimeout(timer)}
+}
+
 async function fetchStockData(code){
-  const r=await fetch(`${EM_QUOTE}?secid=${emM(code)}.${code}&fields=${EM_FIELDS}&_=${Date.now()}`);
-  if(!r.ok)throw new Error('网络错误: '+r.status);
-  const j=await r.json();
-  if(!j.data)throw new Error('股票代码不存在');
-  const d=j.data;
-  function p(v){return v!=null?(v/100).toFixed(2):'--'}
-  return{
-    code:d.f57||code,name:d.f58||'--',
-    price:+p(d.f43),open:+p(d.f46),high:+p(d.f44),low:+p(d.f45),yclose:+p(d.f60),
-    change:d.f169!=null?+(d.f169/100).toFixed(2):0,
-    changePercent:d.f170!=null?+d.f170.toFixed(2):0,
-    volume:(d.f47||0)*100,amount:d.f48||0,
-    turnoverRate:d.f162!=null?d.f162.toFixed(2)+'%':'--',
-    pe:d.f167!=null?d.f167.toFixed(2):'--',
-    amplitude:d.f168!=null?d.f168.toFixed(2)+'%':'--',
-    marketCap:d.f116
-  }
+  let lastErr;
+  // 1. Try East Money API (supports CORS, returns JSON)
+  try{
+    const r=await fetchWithTimeout(`${EM_QUOTE}?secid=${emM(code)}.${code}&fields=${EM_FIELDS}&_=${Date.now()}`);
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    if(!j.data||!j.data.f43)throw new Error('无数据');
+    const d=j.data;
+    function p(v){return v!=null?(v/100).toFixed(2):'--'}
+    return{
+      code:d.f57||code,name:d.f58||code,
+      price:+p(d.f43),open:+p(d.f46),high:+p(d.f44),low:+p(d.f45),yclose:+p(d.f60),
+      change:d.f169!=null?+(d.f169/100).toFixed(2):0,
+      changePercent:d.f170!=null?+d.f170.toFixed(2):0,
+      volume:(d.f47||0)*100,amount:d.f48||0,
+      turnoverRate:d.f162!=null?d.f162.toFixed(2)+'%':'--',
+      pe:d.f167!=null?d.f167.toFixed(2):'--',
+      amplitude:d.f168!=null?d.f168.toFixed(2)+'%':'--',
+      marketCap:d.f116
+    }
+  }catch(e){lastErr=e}
+
+  // 2. Fallback: Try Tencent API via script tag
+  try{return await fetchTencentData(code)}catch(e){lastErr=e}
+
+  throw new Error(lastErr?.message||'无法获取数据')
+}
+
+// Tencent API via script tag (works when CORS APIs are blocked)
+function fetchTencentData(code){
+  return new Promise((resolve,reject)=>{
+    const vn='v_'+emM(code)+code;
+    window[vn]=undefined;
+    const s=document.createElement('script');
+    s.src=`https://qt.gtimg.cn/q=${emM(code)?'sh':'sz'}${code}`;
+    const t=setTimeout(()=>{s.parentNode?.removeChild(s);reject(new Error('超时'))},8000);
+    s.onload=()=>{
+      clearTimeout(t);
+      setTimeout(()=>{
+        const raw=window[vn];
+        if(!raw){s.parentNode?.removeChild(s);reject(new Error('无数据'));return}
+        const p=raw.split('~');
+        if(p.length<30){reject(new Error('数据不完整'));return}
+        const price=+p[3],yclose=+p[4],open=+p[5],high=+p[23],low=+p[24],vol=+p[6],amount=+p[7];
+        resolve({
+          code,p[2]||code,name:p[1]||code,
+          price,open,high,low,yclose,
+          change:price-yclose,
+          changePercent:yclose>0?((price-yclose)/yclose*100):0,
+          volume:vol*100,amount,
+          turnoverRate:p[28]||'--',pe:p[29]||'--',
+          amplitude:((high-low)/yclose*100).toFixed(2)+'%',marketCap:+p[45]
+        });
+        s.parentNode?.removeChild(s);
+      },200)
+    };
+    s.onerror=()=>{clearTimeout(t);s.parentNode?.removeChild(s);reject(new Error('加载失败'))};
+    document.body.appendChild(s);
+  })
 }
 
 async function fetchKLineData(code,range){
@@ -622,7 +671,7 @@ function displayStockInfo(data){
     {l:'市盈率',v:data.pe||'--',c:'#c9d1d9'},{l:'总市值',v:fmtL(data.marketCap)+'元',c:'#c9d1d9'},
   ].map(m=>`<div class="metric"><div class="label">${m.l}</div><div class="value" style="color:${m.c}">${m.v}</div></div>`).join('');
 
-  fetchKLineData(data.code,chartRange).then(d=>{chartData=d;drawChart();displaySignals(data)}).catch(()=>{chartData=[];drawChart()})
+  fetchKLineData(data.code,chartRange).then(d=>{chartData=d;drawChart();if(d&&d.length>0)displaySignals(d)}).catch(()=>{chartData=[];drawChart()})
 }
 
 function showEmptyState(){emptyState.style.display='block';stockInfo.style.display='none';chartData=[];drawChart()}
